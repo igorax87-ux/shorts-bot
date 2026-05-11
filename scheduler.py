@@ -1,9 +1,7 @@
 import asyncio
 import logging
 import os
-import json
 import tempfile
-import subprocess
 import aiohttp
 import pickle
 from datetime import datetime
@@ -88,13 +86,17 @@ def wrap_text_to_lines(text, max_chars=32):
     return lines
 
 
-def create_single_frame(text: str, title: str) -> str:
-    """Создаёт ОДНУ PNG картинку с текстом — быстро!"""
+def create_video(content_type: str, text: str, title: str) -> str:
+    import cv2
+    import random
+
     width, height = 1080, 1920
+
+    # Рисуем кадр через PIL
     img = Image.new('RGB', (width, height), color=(10, 5, 25))
     draw = ImageDraw.Draw(img)
 
-    # Градиент фон
+    # Градиент
     for y in range(height):
         ratio = y / height
         r = int(15 + ratio * 25)
@@ -102,8 +104,7 @@ def create_single_frame(text: str, title: str) -> str:
         b = int(50 + ratio * 35)
         draw.line([(0, y), (width, y)], fill=(r, g, b))
 
-    # Звёзды (фиксированные, не анимированные — для статичного кадра)
-    import random
+    # Звёзды
     rng = random.Random(42)
     for _ in range(200):
         x = rng.randint(0, width)
@@ -153,43 +154,29 @@ def create_single_frame(text: str, title: str) -> str:
     draw.rounded_rectangle([60, cta_y - 20, width - 60, cta_y + 200],
                             radius=20, fill=(30, 15, 60),
                             outline=(150, 80, 200), width=2)
-    draw.text((width // 2, cta_y + 20),  "✨ Бесплатные расклады каждый день",
+    draw.text((width // 2, cta_y + 20),  "Besplatnyye rasklady kazhdyy den",
               font=font_cta, fill=(200, 160, 255), anchor="mm")
-    draw.text((width // 2, cta_y + 90),  "🔮 @numer_taro_bot",
+    draw.text((width // 2, cta_y + 90),  "@numer_taro_bot",
               font=font_cta, fill=(255, 220, 100), anchor="mm")
-    draw.text((width // 2, cta_y + 160), "👇 Ссылка в описании канала",
+    draw.text((width // 2, cta_y + 160), "Ssylka v opisanii kanala",
               font=font_cta, fill=(200, 200, 255), anchor="mm")
 
-    # Сохраняем PNG
-    png_path = tempfile.mktemp(suffix='.png')
-    img.save(png_path)
-    return png_path
+    # Конвертируем PIL -> numpy -> BGR для opencv
+    frame_rgb = np.array(img)
+    frame_bgr = frame_rgb[:, :, ::-1]  # RGB -> BGR
 
-
-def create_video(content_type: str, text: str, title: str) -> str:
-    """Создаёт MP4 через ffmpeg из одного PNG — занимает ~5 секунд"""
-    png_path = create_single_frame(text, title)
+    # Записываем видео через opencv (без ffmpeg!)
     output_path = tempfile.mktemp(suffix='.mp4')
+    fps = 24
+    total_frames = fps * 30
 
-    # ffmpeg: берёт одну картинку и делает из неё 30-секундное видео
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", png_path,
-        "-t", "30",
-        "-vf", "scale=1080:1920",
-        "-c:v", "libx264",
-        "-crf", "23",
-        "-preset", "fast",
-        "-pix_fmt", "yuv420p",
-        output_path
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    os.remove(png_path)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-    if result.returncode != 0:
-        raise Exception(f"ffmpeg error: {result.stderr}")
+    for _ in range(total_frames):
+        writer.write(frame_bgr)
 
+    writer.release()
     return output_path
 
 
@@ -233,7 +220,7 @@ async def generate_and_send(content_type: str, title: str):
         }
 
         text = await ask_groq(prompts[content_type])
-        await bot.send_message(ADMIN_ID, f"🎬 Генерирую видео: {title}...\n⏳ ~10 секунд")
+        await bot.send_message(ADMIN_ID, f"🎬 Генерирую видео: {title}...\n⏳ ~30 секунд")
 
         loop = asyncio.get_event_loop()
         video_path = await loop.run_in_executor(None, create_video, content_type, text, title)
@@ -311,7 +298,7 @@ async def cmd_start(message: Message):
 async def cmd_test(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    await message.answer("🎬 Генерирую тестовое видео... ~10 секунд")
+    await message.answer("🎬 Генерирую тестовое видео... ~30 секунд")
     await generate_and_send("tarot", "🔮 Расклад Таро")
 
 
@@ -332,7 +319,7 @@ async def main():
     logger.info("✅ SHORTS SCHEDULER STARTED!")
     await bot.send_message(
         ADMIN_ID,
-        "✅ Shorts бот запущен!\n\nНапиши /test — видео придёт за 10 секунд 🚀"
+        "✅ Shorts бот запущен!\n\nНапиши /test — видео придёт за ~30 секунд 🚀"
     )
     await dp.start_polling(bot)
 
