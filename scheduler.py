@@ -64,6 +64,9 @@ async def ask_groq(prompt: str) -> str:
         async with session.post("https://api.groq.com/openai/v1/chat/completions", 
                                headers=headers, json=data) as resp:
             result = await resp.json()
+            if "choices" not in result:
+                error_msg = result.get("error", {}).get("message", str(result))
+                raise Exception(f"Groq error: {error_msg}")
             return result["choices"][0]["message"]["content"]
 
 def create_mystical_frame(width, height, frame_num, total_frames):
