@@ -247,8 +247,9 @@ async def generate_and_send(content_type: str, title: str):
             )
         ]])
 
-        with open(video_path, 'rb') as video_file:
-            await bot.send_video(
+        from aiogram.types import FSInputFile
+        video_file = FSInputFile(video_path)
+        await bot.send_video(
                 ADMIN_ID,
                 video_file,
                 caption=f"✅ {title} готово!\n\n📋 Описание:\n{yt_description}",
