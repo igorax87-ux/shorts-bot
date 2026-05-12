@@ -315,12 +315,12 @@ def build_video_ffmpeg(bg_path, overlay_png, out_path) -> bool:
                 "-i", overlay_png,
                 "-filter_complex",
                 "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,setsar=1[bg];"
-                "[1:v]scale=1080:1920[txt];"
-                "[bg][txt]overlay=0:0[out]",
+                "crop=1080:1920,setsar=1,format=rgba[bg];"
+                "[1:v]scale=1080:1920,format=rgba[txt];"
+                "[bg][txt]overlay=0:0,format=yuv420p[out]",
                 "-map", "[out]",
                 "-t", "30",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "30",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "28",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
                 out_path
             ]
@@ -329,9 +329,9 @@ def build_video_ffmpeg(bg_path, overlay_png, out_path) -> bool:
                 "ffmpeg", "-y",
                 "-loop", "1", "-i", overlay_png,
                 "-t", "30",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "30",
+                "-vf", "scale=1080:1920,format=yuv420p",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "28",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                "-vf", "scale=1080:1920",
                 "-an", out_path
             ]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
