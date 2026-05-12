@@ -307,68 +307,52 @@ def create_text_overlay_image(hook: str, text: str, title: str) -> str:
 def build_video_ffmpeg(bg_path, overlay_png, out_path) -> bool:
     try:
         if bg_path and os.path.exists(bg_path):
-            # Сначала перекодируем фоновое видео в нужный формат
-            bg_fixed = tempfile.mktemp(suffix='_bg.mp4')
-            fix_cmd = [
+            # Шаг 1: перекодируем Pexels видео в совместимый формат
+            bg_fixed = tempfile.mktemp(suffix='_fixed.mp4')
+            fix = subprocess.run([
                 "ffmpeg", "-y", "-i", bg_path,
                 "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "30",
-                "-pix_fmt", "yuv420p", "-an", "-t", "30",
-                bg_fixed
-            ]
-            r = subprocess.run(fix_cmd, capture_output=True, text=True, timeout=60)
-            if r.returncode != 0 or not os.path.exists(bg_fixed):
-                logger.warning("bg fix failed, using static")
-                bg_fixed = None
-            
-            if bg_fixed:
-                # Накладываем текст на исправленное видео
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+                "-pix_fmt", "yuv420p", "-an", "-t", "30", bg_fixed
+            ], capture_output=True, text=True, timeout=90)
+
+            if fix.returncode == 0 and os.path.exists(bg_fixed) and os.path.getsize(bg_fixed) > 1000:
+                # Шаг 2: накладываем текст поверх
                 cmd = [
                     "ffmpeg", "-y",
                     "-i", bg_fixed,
                     "-i", overlay_png,
-                    "-filter_complex",
-                    "[0:v][1:v]overlay=0:0[out]",
+                    "-filter_complex", "[0:v][1:v]overlay=0:0[out]",
                     "-map", "[out]",
                     "-t", "30",
                     "-c:v", "libx264", "-preset", "fast", "-crf", "28",
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
                     out_path
                 ]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                try: os.remove(bg_fixed)
+                except: pass
+                if r.returncode == 0:
+                    return True
+                logger.error(f"overlay failed: {r.stderr[-300:]}")
             else:
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-loop", "1", "-i", overlay_png,
-                    "-t", "30",
-                    "-vf", "scale=1080:1920",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "28",
-                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
-                    out_path
-                ]
-        else:
-            cmd = [
-                "ffmpeg", "-y",
-                "-loop", "1", "-i", overlay_png,
-                "-t", "30",
-                "-vf", "scale=1080:1920",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "28",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
-                out_path
-            ]
+                logger.warning(f"bg fix failed: {fix.stderr[-300:]}")
 
+        # Запасной вариант: красивый тёмный фон через ffmpeg (без Pexels)
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "color=c=0x08041a:size=1080x1920:rate=24",
+            "-i", overlay_png,
+            "-filter_complex", "[0:v][1:v]overlay=0:0[out]",
+            "-map", "[out]",
+            "-t", "30",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "28",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
+            out_path
+        ]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        
-        # Чистим временный bg файл
-        if bg_path and os.path.exists(bg_path):
-            try:
-                bg_fixed_path = bg_path.replace('.mp4', '_bg.mp4')
-                if os.path.exists(bg_fixed_path):
-                    os.remove(bg_fixed_path)
-            except Exception:
-                pass
-
         if r.returncode != 0:
-            logger.error(f"ffmpeg stderr: {r.stderr[-500:]}")
+            logger.error(f"ffmpeg fallback failed: {r.stderr[-300:]}")
             return False
         return True
     except Exception as e:
