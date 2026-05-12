@@ -7,7 +7,42 @@ import pickle
 import random
 import json
 import subprocess
+import shutil
 from datetime import datetime
+
+# ── УСТАНОВКА FFMPEG ЕСЛИ НЕТ ────────────────────────────────────────────────
+def ensure_ffmpeg():
+    if shutil.which("ffmpeg"):
+        return True
+    logging.info("ffmpeg not found, installing via apt...")
+    try:
+        subprocess.run(
+            ["apt-get", "install", "-y", "-q", "ffmpeg"],
+            capture_output=True, timeout=120, check=True
+        )
+        if shutil.which("ffmpeg"):
+            logging.info("ffmpeg installed successfully!")
+            return True
+    except Exception as e:
+        logging.warning(f"apt install failed: {e}")
+    # Запасной вариант — imagemagick ffmpeg через pip
+    try:
+        subprocess.run(
+            ["pip", "install", "-q", "imageio[ffmpeg]"],
+            capture_output=True, timeout=60, check=True
+        )
+        import imageio_ffmpeg
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        os.environ["PATH"] = os.path.dirname(ffmpeg_path) + ":" + os.environ.get("PATH", "")
+        if shutil.which("ffmpeg"):
+            logging.info("ffmpeg installed via imageio!")
+            return True
+    except Exception as e:
+        logging.warning(f"imageio ffmpeg failed: {e}")
+    logging.warning("ffmpeg unavailable, will use opencv fallback")
+    return False
+
+ensure_ffmpeg()
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
@@ -202,10 +237,10 @@ def create_text_overlay_image(hook: str, text: str, title: str) -> str:
             return ImageFont.truetype(font_path, size)
         return ImageFont.load_default()
 
-    f_hook  = fnt(64)
-    f_title = fnt(54)
-    f_body  = fnt(44)
-    f_cta   = fnt(40)
+    f_hook  = fnt(82)   # крупный цепляющий хук
+    f_title = fnt(68)   # заголовок
+    f_body  = fnt(56)   # основной текст
+    f_cta   = fnt(50)   # CTA блок снизу
 
     def shadow_text(d, xy, txt, font, color, shadow=(0, 0, 0, 220), off=4):
         x, y = xy
@@ -313,16 +348,17 @@ def build_video_opencv(overlay_png, out_path) -> bool:
     """Запасной вариант без ffmpeg."""
     try:
         import cv2
-        img = Image.open(overlay_png)
-        bg  = Image.new('RGB', (1080, 1920), (8, 4, 22))
-        merged = Image.alpha_composite(bg.convert('RGBA'), img).convert('RGB')
-        frame_bgr = np.array(merged)[:, :, ::-1]
+        overlay = Image.open(overlay_png).convert('RGBA')
+        # Тёмно-фиолетовый фон
+        bg = Image.new('RGBA', (1080, 1920), (8, 4, 22, 255))
+        merged = Image.alpha_composite(bg, overlay).convert('RGB')
+        frame_bgr = np.array(merged)[:, :, ::-1].copy()
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(out_path, fourcc, 24, (1080, 1920))
         for _ in range(720):   # 30 сек × 24fps
             writer.write(frame_bgr)
         writer.release()
-        return True
+        return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
     except Exception as e:
         logger.error(f"opencv error: {e}")
         return False
