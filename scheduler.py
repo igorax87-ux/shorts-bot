@@ -507,11 +507,10 @@ async def generate_and_send(content_type: str, title: str):
         ]])
 
         video_file = FSInputFile(video_path)
-        await bot.send_video(
+        await bot.send_document(
             ADMIN_ID, video_file,
             caption=f"✅ {title} готово!\n\n📋 Описание:\n{yt_desc}",
             reply_markup=keyboard,
-            supports_streaming=True
         )
     except Exception as e:
         logger.error(f"generate_and_send error: {e}")
