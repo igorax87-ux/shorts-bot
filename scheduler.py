@@ -4,10 +4,13 @@ import os
 import tempfile
 import aiohttp
 import pickle
+import random
+import json
+import subprocess
 from datetime import datetime
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -18,19 +21,23 @@ from googleapiclient.http import MediaFileUpload
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
-YOUTUBE_TOKEN = os.getenv("YOUTUBE_TOKEN")
+# ── ENV ───────────────────────────────────────────────────────────────────────
+BOT_TOKEN             = os.getenv("BOT_TOKEN")
+GROQ_API_KEY          = os.getenv("GROQ_API_KEY")
+ADMIN_ID              = int(os.getenv("ADMIN_ID", "0"))
+YOUTUBE_TOKEN         = os.getenv("YOUTUBE_TOKEN")
 YOUTUBE_REFRESH_TOKEN = os.getenv("YOUTUBE_REFRESH_TOKEN")
-YOUTUBE_CLIENT_ID = os.getenv("YOUTUBE_CLIENT_ID")
+YOUTUBE_CLIENT_ID     = os.getenv("YOUTUBE_CLIENT_ID")
 YOUTUBE_CLIENT_SECRET = os.getenv("YOUTUBE_CLIENT_SECRET")
+PEXELS_API_KEY        = os.getenv("PEXELS_API_KEY", "cyoihyJPUKMu8nGftkt9Z51s8St0tuXV5GkZ4VIonpeczZpLVgBmWquI")
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+bot    = Bot(token=BOT_TOKEN)
+dp     = Dispatcher()
 router = Router()
 
+USED_VIDEOS_FILE = "/tmp/used_pexels_videos.json"
+
+# ── ДАННЫЕ ────────────────────────────────────────────────────────────────────
 TAROT_CARDS = [
     "Шут", "Маг", "Верховная Жрица", "Императрица", "Император",
     "Иерофант", "Влюблённые", "Колесница", "Сила", "Отшельник",
@@ -40,148 +47,351 @@ TAROT_CARDS = [
 ]
 
 SCHEDULES = [
-    {"hour": 9,  "minute": 0,  "type": "card",      "emoji": "🃏", "title": "Карта дня"},
-    {"hour": 12, "minute": 0,  "type": "numerology", "emoji": "🔢", "title": "Нумерология"},
-    {"hour": 18, "minute": 0,  "type": "tarot",      "emoji": "🔮", "title": "Расклад Таро"},
-    {"hour": 21, "minute": 0,  "type": "stars",      "emoji": "⭐", "title": "Послание звёзд"},
+    {"hour": 9,  "minute": 0,  "type": "card",       "emoji": "🃏", "title": "Карта дня"},
+    {"hour": 12, "minute": 0,  "type": "numerology",  "emoji": "🔢", "title": "Нумерология"},
+    {"hour": 18, "minute": 0,  "type": "tarot",       "emoji": "🔮", "title": "Расклад Таро"},
+    {"hour": 21, "minute": 0,  "type": "stars",       "emoji": "⭐", "title": "Послание звёзд"},
 ]
 
+# Ключевые слова для Pexels
+PEXELS_KEYWORDS = {
+    "card":       ["tarot cards mystical dark", "magic candles fortune", "mystical hands occult", "fortune telling fog", "magic ritual dark"],
+    "numerology": ["sacred geometry cosmos", "golden numbers universe", "mystical numbers space", "fibonacci spiral light", "cosmic energy glow"],
+    "tarot":      ["tarot reading mystic", "crystal ball magic", "witch forest dark", "mystical altar candles", "dark magic ritual"],
+    "stars":      ["galaxy stars milky way", "night sky cosmos purple", "nebula universe dark", "aurora borealis night", "starry sky dark"],
+}
 
+# 35 ЦЕПЛЯЮЩИХ ХУКОВ
+HOOKS = [
+    "Это послание пришло именно для тебя...",
+    "Вселенная шепчет тебе кое-что важное",
+    "Стоп. Это не случайно что ты это видишь",
+    "Твои ответы уже ждут тебя здесь",
+    "Сегодня звёзды говорят только о тебе",
+    "Это знак. Читай до конца",
+    "Ты это видишь — значит тебе это нужно",
+    "Судьба отправила тебе сообщение",
+    "Не листай дальше. Это важно",
+    "Твои карты открылись прямо сейчас",
+    "Что скрывает от тебя Вселенная?",
+    "Секрет твоей судьбы раскрыт",
+    "Высшие силы говорят именно с тобой",
+    "Этот день изменит всё. Смотри",
+    "Тёмная тайна твоего пути открыта",
+    "Космос послал тебе это сегодня",
+    "Твоя судьба разворачивается прямо сейчас",
+    "Остановись. Вселенная хочет тебе сказать",
+    "Это видение пришло специально для тебя",
+    "Магия этого дня раскрывается здесь",
+    "Знаешь ли ты что ждёт тебя впереди?",
+    "Архангелы шепчут твоё имя сегодня",
+    "Скрытое становится явным. Смотри",
+    "Твой путь освещается прямо сейчас",
+    "Предупреждение от звёзд именно тебе",
+    "Энергия этого дня принадлежит тебе",
+    "Что таят карты для тебя сегодня?",
+    "Молчание небес нарушено ради тебя",
+    "Твоя судьба говорит. Слышишь её?",
+    "Этот знак появился не случайно",
+    "Силы небес собрались ради тебя",
+    "Что Луна скрывала от тебя месяцами?",
+    "Портал открыт. Твоё послание внутри",
+    "Карты не лгут. Особенно сегодня",
+    "Вибрации этого дня несут твой ответ",
+]
+
+# ── PEXELS ────────────────────────────────────────────────────────────────────
+def load_used_videos() -> set:
+    try:
+        with open(USED_VIDEOS_FILE, 'r') as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+
+def save_used_videos(used: set):
+    try:
+        with open(USED_VIDEOS_FILE, 'w') as f:
+            json.dump(list(used), f)
+    except Exception:
+        pass
+
+
+async def get_pexels_video(content_type: str):
+    """Скачивает уникальное видео с Pexels. Возвращает путь или None."""
+    used_ids = load_used_videos()
+    keywords = PEXELS_KEYWORDS.get(content_type, PEXELS_KEYWORDS["stars"])
+    keyword  = random.choice(keywords)
+    headers  = {"Authorization": PEXELS_API_KEY}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            params = {"query": keyword, "orientation": "portrait", "size": "medium", "per_page": 20}
+            async with session.get("https://api.pexels.com/videos/search",
+                                   headers=headers, params=params) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Pexels API status: {resp.status}")
+                    return None
+                data = await resp.json()
+
+            videos = data.get("videos", [])
+            if not videos:
+                return None
+
+            fresh = [v for v in videos if str(v["id"]) not in used_ids]
+            if not fresh:
+                used_ids = set()   # сбрасываем историю
+                fresh = videos
+
+            video    = random.choice(fresh)
+            video_id = str(video["id"])
+
+            files = video.get("video_files", [])
+            # Берём вертикальные файлы, иначе любые
+            portrait = [f for f in files if f.get("width", 0) < f.get("height", 1)]
+            pool = portrait if portrait else files
+            # Среднее качество чтобы не слишком большое
+            pool.sort(key=lambda x: x.get("width", 0) * x.get("height", 0))
+            chosen = pool[len(pool) // 2] if len(pool) > 1 else pool[0]
+
+            video_url = chosen.get("link")
+            if not video_url:
+                return None
+
+            tmp_path = tempfile.mktemp(suffix='.mp4')
+            async with session.get(video_url) as vresp:
+                if vresp.status != 200:
+                    return None
+                with open(tmp_path, 'wb') as f:
+                    f.write(await vresp.read())
+
+            used_ids.add(video_id)
+            save_used_videos(used_ids)
+            logger.info(f"Pexels OK: id={video_id} query='{keyword}'")
+            return tmp_path
+
+    except Exception as e:
+        logger.warning(f"Pexels error: {e}")
+        return None
+
+# ── ТЕКСТ НА ПРОЗРАЧНОМ PNG ───────────────────────────────────────────────────
+def create_text_overlay_image(hook: str, text: str, title: str) -> str:
+    W, H = 1080, 1920
+    base = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+
+    # Градиентный тёмный overlay (для читаемости)
+    grad = Image.new('RGBA', (W, H))
+    gd   = ImageDraw.Draw(grad)
+    for y in range(H):
+        alpha = int(210 * (y / H))
+        gd.line([(0, y), (W, y)], fill=(0, 0, 8, alpha))
+    base = Image.alpha_composite(base, grad)
+    draw = ImageDraw.Draw(base)
+
+    # Шрифты — ищем что есть в системе
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+    ]
+    font_path = next((p for p in candidates if os.path.exists(p)), None)
+
+    def fnt(size):
+        if font_path:
+            return ImageFont.truetype(font_path, size)
+        return ImageFont.load_default()
+
+    f_hook  = fnt(64)
+    f_title = fnt(54)
+    f_body  = fnt(44)
+    f_cta   = fnt(40)
+
+    def shadow_text(d, xy, txt, font, color, shadow=(0, 0, 0, 220), off=4):
+        x, y = xy
+        d.text((x + off, y + off), txt, font=font, fill=shadow, anchor="mm")
+        d.text((x, y),             txt, font=font, fill=color,  anchor="mm")
+
+    def wrap(t, max_c=26):
+        words = t.split()
+        lines, cur = [], ""
+        for w in words:
+            if len(cur) + len(w) + 1 <= max_c:
+                cur = (cur + " " + w).strip()
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines
+
+    # ── ХУК — жёлтый, крупный, цепляющий ──
+    y = 160
+    for line in wrap(hook, 22):
+        shadow_text(draw, (W // 2, y), line, f_hook, (255, 225, 60, 255))
+        y += 86
+
+    # Линия-разделитель
+    draw.line([(80, y + 15), (W - 80, y + 15)], fill=(180, 80, 255, 200), width=3)
+
+    # ── Заголовок — фиолетовый ──
+    shadow_text(draw, (W // 2, y + 70), title, f_title, (210, 155, 255, 255))
+    draw.line([(80, y + 115), (W - 80, y + 115)], fill=(180, 80, 255, 150), width=2)
+
+    # ── Основной текст — белый ──
+    ty = y + 185
+    for line in wrap(text, 28)[:9]:
+        shadow_text(draw, (W // 2, ty), line, f_body, (255, 245, 255, 255))
+        ty += 66
+        if ty > H - 400:
+            break
+
+    # ── CTA блок снизу ──
+    cta_y = H - 340
+    cta_bg = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    cta_d  = ImageDraw.Draw(cta_bg)
+    cta_d.rounded_rectangle([50, cta_y - 20, W - 50, cta_y + 270],
+                             radius=28,
+                             fill=(12, 0, 40, 210),
+                             outline=(170, 70, 255, 255),
+                             width=3)
+    base = Image.alpha_composite(base, cta_bg)
+    draw = ImageDraw.Draw(base)
+
+    shadow_text(draw, (W // 2, cta_y + 30),
+                "🔮 Бесплатный расклад каждый день", f_cta, (190, 140, 255, 255))
+    shadow_text(draw, (W // 2, cta_y + 115),
+                "@numer_taro_bot", f_cta, (255, 215, 60, 255))
+    shadow_text(draw, (W // 2, cta_y + 200),
+                "Ссылка в описании ⬇️", f_cta, (170, 215, 255, 255))
+
+    png_path = tempfile.mktemp(suffix='.png')
+    base.save(png_path, 'PNG')
+    return png_path
+
+# ── СБОРКА ВИДЕО ЧЕРЕЗ FFMPEG ─────────────────────────────────────────────────
+def build_video_ffmpeg(bg_path, overlay_png, out_path) -> bool:
+    try:
+        if bg_path and os.path.exists(bg_path):
+            cmd = [
+                "ffmpeg", "-y",
+                "-stream_loop", "-1", "-i", bg_path,
+                "-i", overlay_png,
+                "-filter_complex",
+                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+                "crop=1080:1920,setsar=1[bg];"
+                "[1:v]scale=1080:1920[txt];"
+                "[bg][txt]overlay=0:0[out]",
+                "-map", "[out]",
+                "-t", "30",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "30",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
+                out_path
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-i", overlay_png,
+                "-t", "30",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "30",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                "-vf", "scale=1080:1920",
+                "-an", out_path
+            ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            logger.error(f"ffmpeg stderr: {r.stderr[-800:]}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"ffmpeg exception: {e}")
+        return False
+
+
+def build_video_opencv(overlay_png, out_path) -> bool:
+    """Запасной вариант без ffmpeg."""
+    try:
+        import cv2
+        img = Image.open(overlay_png)
+        bg  = Image.new('RGB', (1080, 1920), (8, 4, 22))
+        merged = Image.alpha_composite(bg.convert('RGBA'), img).convert('RGB')
+        frame_bgr = np.array(merged)[:, :, ::-1]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(out_path, fourcc, 24, (1080, 1920))
+        for _ in range(720):   # 30 сек × 24fps
+            writer.write(frame_bgr)
+        writer.release()
+        return True
+    except Exception as e:
+        logger.error(f"opencv error: {e}")
+        return False
+
+
+async def create_video(content_type: str, text: str, title: str) -> str:
+    hook = random.choice(HOOKS)
+
+    bg_video = await get_pexels_video(content_type)
+
+    loop = asyncio.get_event_loop()
+    overlay_png = await loop.run_in_executor(
+        None, create_text_overlay_image, hook, text, title
+    )
+
+    out_path = tempfile.mktemp(suffix='.mp4')
+    ok = await loop.run_in_executor(None, build_video_ffmpeg, bg_video, overlay_png, out_path)
+
+    if not ok:
+        logger.warning("ffmpeg failed → opencv fallback")
+        ok = await loop.run_in_executor(None, build_video_opencv, overlay_png, out_path)
+
+    # Чистим временные файлы
+    for tmp in [overlay_png, bg_video]:
+        if tmp and os.path.exists(tmp):
+            try: os.remove(tmp)
+            except Exception: pass
+
+    if not ok:
+        raise Exception("Не удалось создать видео")
+
+    # Проверяем размер — Telegram лимит 50MB
+    size_mb = os.path.getsize(out_path) / 1024 / 1024
+    logger.info(f"Video size: {size_mb:.1f} MB")
+    if size_mb > 45:
+        compressed = tempfile.mktemp(suffix='.mp4')
+        cmd = ["ffmpeg", "-y", "-i", out_path,
+               "-c:v", "libx264", "-crf", "36", "-preset", "fast",
+               "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", compressed]
+        subprocess.run(cmd, capture_output=True, timeout=90)
+        if os.path.exists(compressed):
+            os.remove(out_path)
+            out_path = compressed
+
+    return out_path
+
+# ── GROQ ──────────────────────────────────────────────────────────────────────
 async def ask_groq(prompt: str) -> str:
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    data = {
+    payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 300,
-        "temperature": 0.9
+        "temperature": 0.9,
     }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=headers, json=data
-        ) as resp:
+    async with aiohttp.ClientSession() as s:
+        async with s.post("https://api.groq.com/openai/v1/chat/completions",
+                          headers=headers, json=payload) as resp:
             result = await resp.json()
             if "choices" not in result:
-                error_msg = result.get("error", {}).get("message", str(result))
-                raise Exception(f"Groq error: {error_msg}")
+                raise Exception(result.get("error", {}).get("message", str(result)))
             return result["choices"][0]["message"]["content"]
 
-
-def wrap_text_to_lines(text, max_chars=32):
-    words = text.split()
-    lines = []
-    current = ""
-    for word in words:
-        if len(current) + len(word) + 1 <= max_chars:
-            current = (current + " " + word).strip()
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return lines
-
-
-def create_video(content_type: str, text: str, title: str) -> str:
-    import cv2
-    import random
-
-    width, height = 1080, 1920
-
-    # Рисуем кадр через PIL
-    img = Image.new('RGB', (width, height), color=(10, 5, 25))
-    draw = ImageDraw.Draw(img)
-
-    # Градиент
-    for y in range(height):
-        ratio = y / height
-        r = int(15 + ratio * 25)
-        g = int(5 + ratio * 8)
-        b = int(50 + ratio * 35)
-        draw.line([(0, y), (width, y)], fill=(r, g, b))
-
-    # Звёзды
-    rng = random.Random(42)
-    for _ in range(200):
-        x = rng.randint(0, width)
-        y = rng.randint(0, height)
-        brightness = rng.randint(120, 255)
-        size = rng.randint(1, 3)
-        draw.ellipse([x-size, y-size, x+size, y+size],
-                     fill=(brightness, brightness, brightness))
-
-    # Декоративный круг
-    cx, cy = width // 2, 900
-    for radius in [300, 280, 260]:
-        draw.ellipse([cx-radius, cy-radius, cx+radius, cy+radius],
-                     outline=(120, 60, 180), width=1)
-
-    # Шрифты
-    try:
-        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
-        font_text  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 50)
-        font_cta   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 44)
-    except Exception:
-        font_title = ImageFont.load_default()
-        font_text  = font_title
-        font_cta   = font_title
-
-    # Заголовок
-    draw.text((width // 2, 160), title,
-              font=font_title, fill=(220, 180, 255), anchor="mm",
-              stroke_width=2, stroke_fill=(80, 0, 120))
-
-    # Разделитель
-    draw.line([(100, 240), (width - 100, 240)], fill=(150, 80, 200), width=2)
-
-    # Основной текст
-    lines = wrap_text_to_lines(text, max_chars=30)
-    y_pos = 320
-    for line in lines:
-        draw.text((width // 2, y_pos), line,
-                  font=font_text, fill=(255, 240, 255), anchor="mm",
-                  stroke_width=1, stroke_fill=(50, 0, 80))
-        y_pos += 65
-        if y_pos > height - 350:
-            break
-
-    # CTA блок снизу
-    cta_y = height - 280
-    draw.rounded_rectangle([60, cta_y - 20, width - 60, cta_y + 200],
-                            radius=20, fill=(30, 15, 60),
-                            outline=(150, 80, 200), width=2)
-    draw.text((width // 2, cta_y + 20),  "Besplatnyye rasklady kazhdyy den",
-              font=font_cta, fill=(200, 160, 255), anchor="mm")
-    draw.text((width // 2, cta_y + 90),  "@numer_taro_bot",
-              font=font_cta, fill=(255, 220, 100), anchor="mm")
-    draw.text((width // 2, cta_y + 160), "Ssylka v opisanii kanala",
-              font=font_cta, fill=(200, 200, 255), anchor="mm")
-
-    # Конвертируем PIL -> numpy -> BGR для opencv
-    frame_rgb = np.array(img)
-    frame_bgr = frame_rgb[:, :, ::-1]  # RGB -> BGR
-
-    # Записываем видео через opencv (без ffmpeg!)
-    output_path = tempfile.mktemp(suffix='.mp4')
-    fps = 24
-    total_frames = fps * 30
-
-    fourcc = cv2.VideoWriter_fourcc(*'avc1')
-    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-    for _ in range(total_frames):
-        writer.write(frame_bgr)
-
-    writer.release()
-    return output_path
-
-
+# ── YOUTUBE ───────────────────────────────────────────────────────────────────
 def upload_to_youtube(video_path: str, title: str, description: str) -> str:
-    creds = Credentials(
+    creds   = Credentials(
         token=YOUTUBE_TOKEN,
         refresh_token=YOUTUBE_REFRESH_TOKEN,
         client_id=YOUTUBE_CLIENT_ID,
@@ -189,95 +399,91 @@ def upload_to_youtube(video_path: str, title: str, description: str) -> str:
         token_uri="https://oauth2.googleapis.com/token"
     )
     youtube = build('youtube', 'v3', credentials=creds)
-    request_body = {
+    body    = {
         'snippet': {
             'title': title,
             'description': description,
-            'tags': ['таро', 'нумерология', 'гороскоп', 'эзотерика', 'расклад', 'shorts'],
+            'tags': ['таро', 'нумерология', 'гороскоп', 'эзотерика',
+                     'расклад', 'shorts', 'картадня', 'мистика', 'предсказание'],
             'categoryId': '22'
         },
-        'status': {
-            'privacyStatus': 'public',
-            'selfDeclaredMadeForKids': False
-        }
+        'status': {'privacyStatus': 'public', 'selfDeclaredMadeForKids': False}
     }
-    media = MediaFileUpload(video_path, mimetype='video/mp4', resumable=True)
-    response = youtube.videos().insert(
-        part='snippet,status',
-        body=request_body,
-        media_body=media
-    ).execute()
-    return f"https://youtube.com/shorts/{response['id']}"
+    media   = MediaFileUpload(video_path, mimetype='video/mp4', resumable=True)
+    resp    = youtube.videos().insert(part='snippet,status', body=body, media_body=media).execute()
+    return f"https://youtube.com/shorts/{resp['id']}"
 
-
+# ── ГЕНЕРАЦИЯ И ОТПРАВКА ──────────────────────────────────────────────────────
 async def generate_and_send(content_type: str, title: str):
+    card = random.choice(TAROT_CARDS)
+    prompts = {
+        "card":
+            f"Карта Таро на сегодня — {card}. Напиши мистическое послание от этой карты. "
+            "3-4 коротких предложения. Только кириллица. Мистический, личный, глубокий стиль.",
+        "numerology":
+            f"Сегодня {datetime.now().strftime('%d.%m.%Y')}. Напиши нумерологическое послание числа дня. "
+            "3-4 предложения. Только кириллица. Мистический стиль.",
+        "tarot":
+            "Расклад Таро: прошлое, настоящее, будущее — по одному предложению на каждое. "
+            "Только кириллица. Мистически и кратко.",
+        "stars":
+            "Энергетический прогноз звёзд на сегодня. 3-4 предложения. "
+            "Только кириллица. Мистически и вдохновляюще.",
+    }
     try:
-        prompts = {
-            "card":       f"Напиши мистическое послание карты Таро на сегодня. Карта: {np.random.choice(TAROT_CARDS)}. 4-5 предложений. Мистический стиль.",
-            "numerology": f"Сегодня {datetime.now().strftime('%d.%m.%Y')}. Напиши нумерологическое послание числа дня. 4-5 предложений.",
-            "tarot":      "Напиши короткий расклад Таро на три карты: прошлое, настоящее, будущее. Кратко и мистично. 4-5 предложений.",
-            "stars":      "Напиши мистическое послание звёзд на сегодня. Общий энергетический прогноз. 4-5 предложений.",
-        }
-
         text = await ask_groq(prompts[content_type])
-        await bot.send_message(ADMIN_ID, f"🎬 Генерирую видео: {title}...\n⏳ ~30 секунд")
+        await bot.send_message(ADMIN_ID, f"🎬 Генерирую видео: {title}...\n⏳ ~45 секунд")
 
-        loop = asyncio.get_event_loop()
-        video_path = await loop.run_in_executor(None, create_video, content_type, text, title)
+        video_path = await create_video(content_type, text, title)
 
         yt_title = f"{title} | {datetime.now().strftime('%d.%m.%Y')} #shorts #таро #нумерология"
-        yt_description = (
+        yt_desc  = (
             f"{title} на сегодня\n\n"
             "🔮 Хочешь личный расклад?\n"
             "✨ Карта дня БЕСПЛАТНО\n"
             "🔢 Нумерология БЕСПЛАТНО\n"
             "⭐ Натальная карта БЕСПЛАТНО\n\n"
             "👉 @numer_taro_bot\n\n"
-            "#таро #нумерология #эзотерика #гороскоп #расклад #shorts"
+            "#таро #нумерология #эзотерика #гороскоп #расклад #shorts "
+            "#картадня #предсказание #мистика #послание"
         )
 
         cache_key = f"video_{datetime.now().strftime('%H%M%S')}"
         with open(f"/tmp/{cache_key}.pkl", 'wb') as f:
-            pickle.dump({'path': video_path, 'title': yt_title, 'description': yt_description}, f)
+            pickle.dump({'path': video_path, 'title': yt_title, 'description': yt_desc}, f)
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(
-                text="📤 Загрузить в YouTube Shorts",
-                callback_data=f"upload:{cache_key}"
-            )
+            InlineKeyboardButton(text="📤 Загрузить в YouTube Shorts",
+                                 callback_data=f"upload:{cache_key}")
         ]])
 
-        from aiogram.types import FSInputFile
         video_file = FSInputFile(video_path)
         await bot.send_video(
-                ADMIN_ID,
-                video_file,
-                caption=f"✅ {title} готово!\n\n📋 Описание:\n{yt_description}",
-                reply_markup=keyboard
-            )
-
+            ADMIN_ID, video_file,
+            caption=f"✅ {title} готово!\n\n📋 Описание:\n{yt_desc}",
+            reply_markup=keyboard,
+            supports_streaming=True
+        )
     except Exception as e:
         logger.error(f"generate_and_send error: {e}")
         await bot.send_message(ADMIN_ID, f"❌ Ошибка генерации: {e}")
 
-
+# ── HANDLERS ──────────────────────────────────────────────────────────────────
 @router.callback_query(F.data.startswith("upload:"))
 async def handle_upload(callback: CallbackQuery):
-    cache_key = callback.data.split(":")[1]
+    key = callback.data.split(":")[1]
     await callback.answer("Загружаю в YouTube...")
     try:
-        with open(f"/tmp/{cache_key}.pkl", 'rb') as f:
+        with open(f"/tmp/{key}.pkl", 'rb') as f:
             data = pickle.load(f)
         await callback.message.answer("⏳ Загружаю в YouTube... 1-2 минуты")
         loop = asyncio.get_event_loop()
-        url = await loop.run_in_executor(
+        url  = await loop.run_in_executor(
             None, upload_to_youtube, data['path'], data['title'], data['description']
         )
         await callback.message.answer(f"🎉 Загружено!\n\n🔗 {url}")
     except Exception as e:
-        await callback.message.answer(
-            f"❌ Ошибка загрузки: {e}\n\nЗагрузи вручную через YouTube Studio"
-        )
+        await callback.message.answer(f"❌ Ошибка загрузки: {e}\n\nЗагрузи вручную через YouTube Studio")
 
 
 @router.message(Command("start"))
@@ -291,7 +497,8 @@ async def cmd_start(message: Message):
         "12:00 — 🔢 Нумерология\n"
         "18:00 — 🔮 Расклад Таро\n"
         "21:00 — ⭐ Послание звёзд\n\n"
-        "/test — тестовое видео прямо сейчас"
+        "/test — тестовое видео прямо сейчас\n"
+        "/stats — сколько Pexels видео использовано"
     )
 
 
@@ -299,28 +506,35 @@ async def cmd_start(message: Message):
 async def cmd_test(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    await message.answer("🎬 Генерирую тестовое видео... ~30 секунд")
+    await message.answer("🎬 Генерирую тестовое видео с Pexels фоном... ~45 сек")
     await generate_and_send("tarot", "🔮 Расклад Таро")
 
 
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    used = load_used_videos()
+    await message.answer(f"📊 Использовано уникальных Pexels видео: {len(used)}")
+
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────
 async def main():
     dp.include_router(router)
-
     scheduler = AsyncIOScheduler(timezone="Europe/Kiev")
     for s in SCHEDULES:
         scheduler.add_job(
-            generate_and_send,
-            'cron',
-            hour=s["hour"],
-            minute=s["minute"],
+            generate_and_send, 'cron',
+            hour=s["hour"], minute=s["minute"],
             args=[s["type"], f"{s['emoji']} {s['title']}"]
         )
     scheduler.start()
-
     logger.info("✅ SHORTS SCHEDULER STARTED!")
     await bot.send_message(
         ADMIN_ID,
-        "✅ Shorts бот запущен!\n\nНапиши /test — видео придёт за ~30 секунд 🚀"
+        "✅ Shorts бот запущен!\n\n"
+        "Напиши /test — видео с живым Pexels фоном придёт за ~45 сек 🚀\n"
+        "35 разных хуков, уникальные фоны, без повторений!"
     )
     await dp.start_polling(bot)
 
