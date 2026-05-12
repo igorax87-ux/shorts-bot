@@ -212,16 +212,18 @@ async def get_pexels_video(content_type: str):
 # ── ТЕКСТ НА ПРОЗРАЧНОМ PNG ───────────────────────────────────────────────────
 def create_text_overlay_image(hook: str, text: str, title: str) -> str:
     W, H = 1080, 1920
-    base = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    # Финальное изображение БЕЗ прозрачности (RGB) — чёрный фон
+    final = Image.new('RGB', (W, H), (8, 4, 22))
 
-    # Градиентный тёмный overlay (для читаемости)
+    # Градиентный тёмный overlay
     grad = Image.new('RGBA', (W, H))
     gd   = ImageDraw.Draw(grad)
     for y in range(H):
-        alpha = int(210 * (y / H))
-        gd.line([(0, y), (W, y)], fill=(0, 0, 8, alpha))
-    base = Image.alpha_composite(base, grad)
-    draw = ImageDraw.Draw(base)
+        alpha = int(200 * (y / H))
+        gd.line([(0, y), (W, y)], fill=(0, 0, 15, alpha))
+    final.paste(grad.convert('RGB'), mask=grad.split()[3])
+
+    draw = ImageDraw.Draw(final)
 
     # Шрифты — ищем что есть в системе
     candidates = [
@@ -242,7 +244,7 @@ def create_text_overlay_image(hook: str, text: str, title: str) -> str:
     f_body  = fnt(56)   # основной текст
     f_cta   = fnt(50)   # CTA блок снизу
 
-    def shadow_text(d, xy, txt, font, color, shadow=(0, 0, 0, 220), off=4):
+    def shadow_text(d, xy, txt, font, color, shadow=(0, 0, 0), off=4):
         x, y = xy
         d.text((x + off, y + off), txt, font=font, fill=shadow, anchor="mm")
         d.text((x, y),             txt, font=font, fill=color,  anchor="mm")
@@ -264,45 +266,41 @@ def create_text_overlay_image(hook: str, text: str, title: str) -> str:
     # ── ХУК — жёлтый, крупный, цепляющий ──
     y = 160
     for line in wrap(hook, 22):
-        shadow_text(draw, (W // 2, y), line, f_hook, (255, 225, 60, 255))
+        shadow_text(draw, (W // 2, y), line, f_hook, (255, 225, 60))
         y += 86
 
     # Линия-разделитель
-    draw.line([(80, y + 15), (W - 80, y + 15)], fill=(180, 80, 255, 200), width=3)
+    draw.line([(80, y + 15), (W - 80, y + 15)], fill=(180, 80, 255), width=3)
 
     # ── Заголовок — фиолетовый ──
-    shadow_text(draw, (W // 2, y + 70), title, f_title, (210, 155, 255, 255))
-    draw.line([(80, y + 115), (W - 80, y + 115)], fill=(180, 80, 255, 150), width=2)
+    shadow_text(draw, (W // 2, y + 70), title, f_title, (210, 155, 255))
+    draw.line([(80, y + 115), (W - 80, y + 115)], fill=(180, 80, 255), width=2)
 
     # ── Основной текст — белый ──
     ty = y + 185
     for line in wrap(text, 28)[:9]:
-        shadow_text(draw, (W // 2, ty), line, f_body, (255, 245, 255, 255))
+        shadow_text(draw, (W // 2, ty), line, f_body, (255, 245, 255))
         ty += 66
         if ty > H - 400:
             break
 
     # ── CTA блок снизу ──
     cta_y = H - 340
-    cta_bg = Image.new('RGBA', (W, H), (0, 0, 0, 0))
-    cta_d  = ImageDraw.Draw(cta_bg)
-    cta_d.rounded_rectangle([50, cta_y - 20, W - 50, cta_y + 270],
-                             radius=28,
-                             fill=(12, 0, 40, 210),
-                             outline=(170, 70, 255, 255),
-                             width=3)
-    base = Image.alpha_composite(base, cta_bg)
-    draw = ImageDraw.Draw(base)
+    draw.rounded_rectangle([50, cta_y - 20, W - 50, cta_y + 270],
+                            radius=28,
+                            fill=(12, 0, 40),
+                            outline=(170, 70, 255),
+                            width=3)
 
     shadow_text(draw, (W // 2, cta_y + 30),
-                "🔮 Бесплатный расклад каждый день", f_cta, (190, 140, 255, 255))
+                "Бесплатный расклад каждый день", f_cta, (190, 140, 255))
     shadow_text(draw, (W // 2, cta_y + 115),
-                "@numer_taro_bot", f_cta, (255, 215, 60, 255))
+                "@numer_taro_bot", f_cta, (255, 215, 60))
     shadow_text(draw, (W // 2, cta_y + 200),
-                "Ссылка в описании ⬇️", f_cta, (170, 215, 255, 255))
+                "Ссылка в описании", f_cta, (170, 215, 255))
 
     png_path = tempfile.mktemp(suffix='.png')
-    base.save(png_path, 'PNG')
+    final.save(png_path, 'PNG')
     return png_path
 
 # ── СБОРКА ВИДЕО ЧЕРЕЗ FFMPEG ─────────────────────────────────────────────────
@@ -315,9 +313,9 @@ def build_video_ffmpeg(bg_path, overlay_png, out_path) -> bool:
                 "-i", overlay_png,
                 "-filter_complex",
                 "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,setsar=1,format=rgba[bg];"
-                "[1:v]scale=1080:1920,format=rgba[txt];"
-                "[bg][txt]overlay=0:0,format=yuv420p[out]",
+                "crop=1080:1920,setsar=1[bg];"
+                "[1:v]scale=1080:1920[txt];"
+                "[bg][txt]overlay=0:0[out]",
                 "-map", "[out]",
                 "-t", "30",
                 "-c:v", "libx264", "-preset", "fast", "-crf", "28",
@@ -348,14 +346,11 @@ def build_video_opencv(overlay_png, out_path) -> bool:
     """Запасной вариант без ffmpeg."""
     try:
         import cv2
-        overlay = Image.open(overlay_png).convert('RGBA')
-        # Тёмно-фиолетовый фон
-        bg = Image.new('RGBA', (1080, 1920), (8, 4, 22, 255))
-        merged = Image.alpha_composite(bg, overlay).convert('RGB')
-        frame_bgr = np.array(merged)[:, :, ::-1].copy()
+        img = Image.open(overlay_png).convert('RGB')
+        frame_bgr = np.array(img)[:, :, ::-1].copy()
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(out_path, fourcc, 24, (1080, 1920))
-        for _ in range(720):   # 30 сек × 24fps
+        for _ in range(720):
             writer.write(frame_bgr)
         writer.release()
         return os.path.exists(out_path) and os.path.getsize(out_path) > 1000
