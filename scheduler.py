@@ -307,34 +307,68 @@ def create_text_overlay_image(hook: str, text: str, title: str) -> str:
 def build_video_ffmpeg(bg_path, overlay_png, out_path) -> bool:
     try:
         if bg_path and os.path.exists(bg_path):
-            cmd = [
-                "ffmpeg", "-y",
-                "-stream_loop", "-1", "-i", bg_path,
-                "-i", overlay_png,
-                "-filter_complex",
-                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,setsar=1[bg];"
-                "[1:v]scale=1080:1920[txt];"
-                "[bg][txt]overlay=0:0[out]",
-                "-map", "[out]",
-                "-t", "30",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "28",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
-                out_path
+            # Сначала перекодируем фоновое видео в нужный формат
+            bg_fixed = tempfile.mktemp(suffix='_bg.mp4')
+            fix_cmd = [
+                "ffmpeg", "-y", "-i", bg_path,
+                "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "30",
+                "-pix_fmt", "yuv420p", "-an", "-t", "30",
+                bg_fixed
             ]
+            r = subprocess.run(fix_cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode != 0 or not os.path.exists(bg_fixed):
+                logger.warning("bg fix failed, using static")
+                bg_fixed = None
+            
+            if bg_fixed:
+                # Накладываем текст на исправленное видео
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", bg_fixed,
+                    "-i", overlay_png,
+                    "-filter_complex",
+                    "[0:v][1:v]overlay=0:0[out]",
+                    "-map", "[out]",
+                    "-t", "30",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "28",
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
+                    out_path
+                ]
+            else:
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-loop", "1", "-i", overlay_png,
+                    "-t", "30",
+                    "-vf", "scale=1080:1920",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "28",
+                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
+                    out_path
+                ]
         else:
             cmd = [
                 "ffmpeg", "-y",
                 "-loop", "1", "-i", overlay_png,
                 "-t", "30",
-                "-vf", "scale=1080:1920,format=yuv420p",
+                "-vf", "scale=1080:1920",
                 "-c:v", "libx264", "-preset", "fast", "-crf", "28",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                "-an", out_path
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
+                out_path
             ]
+
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        
+        # Чистим временный bg файл
+        if bg_path and os.path.exists(bg_path):
+            try:
+                bg_fixed_path = bg_path.replace('.mp4', '_bg.mp4')
+                if os.path.exists(bg_fixed_path):
+                    os.remove(bg_fixed_path)
+            except Exception:
+                pass
+
         if r.returncode != 0:
-            logger.error(f"ffmpeg stderr: {r.stderr[-800:]}")
+            logger.error(f"ffmpeg stderr: {r.stderr[-500:]}")
             return False
         return True
     except Exception as e:
